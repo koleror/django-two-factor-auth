@@ -3,6 +3,7 @@ from time import time
 
 from django import forms
 from django.forms import Form, ModelForm
+from django.contrib.auth.forms import AuthenticationForm
 from django.utils.translation import ugettext_lazy as _
 from django_otp.forms import OTPAuthenticationFormMixin
 from django_otp.oath import totp
@@ -138,7 +139,7 @@ class DisableForm(forms.Form):
     understand = forms.BooleanField(label=_("Yes, I am sure"))
 
 
-class AuthenticationTokenForm(OTPAuthenticationFormMixin, Form):
+class AuthenticationTokenForm(forms.Form, OTPAuthenticationFormMixin):
     otp_token = forms.IntegerField(label=_("Token"), min_value=1,
                                    max_value=int('9' * totp_digits()))
 
@@ -163,11 +164,13 @@ class AuthenticationTokenForm(OTPAuthenticationFormMixin, Form):
         # YubiKey generates a OTP of 44 characters (not digits). So if the
         # user's primary device is a YubiKey, replace the otp_token
         # IntegerField with a CharField.
-        if RemoteYubikeyDevice and YubikeyDevice and \
-                isinstance(initial_device, (RemoteYubikeyDevice, YubikeyDevice)):
+        YubikeyDevices = (RemoteYubikeyDevice, YubikeyDevice)
+        if (RemoteYubikeyDevice and YubikeyDevice and
+                isinstance(initial_device, YubikeyDevices)):
             self.fields['otp_token'] = forms.CharField(label=_('YubiKey'))
 
     def clean(self):
+        super(AuthenticationTokenForm, self).clean()
         self.clean_otp(self.user)
         return self.cleaned_data
 

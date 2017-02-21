@@ -1,7 +1,6 @@
 import logging
 from base64 import b32encode
 from binascii import unhexlify
-
 import django_otp
 import qrcode
 import qrcode.image.svg
@@ -27,7 +26,6 @@ from django_otp.util import random_hex
 from two_factor import signals
 from two_factor.models import get_available_methods
 from two_factor.utils import totp_digits
-
 from ..forms import (
     AuthenticationTokenForm, BackupTokenForm, DeviceValidationForm, MethodForm,
     PhoneNumberForm, PhoneNumberMethodForm, TOTPDeviceForm, YubiKeyDeviceForm,
@@ -47,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 @class_view_decorator(sensitive_post_parameters())
 @class_view_decorator(never_cache)
-class LoginView(IdempotentSessionWizardView):
+class LoginView(TemplateView):
     """
     View for handling the login process, including OTP verification.
 
@@ -58,34 +56,50 @@ class LoginView(IdempotentSessionWizardView):
     user is asked to provide the generated token. The backup devices are also
     listed, allowing the user to select a backup device for verification.
     """
-    template_name = 'two_factor/core/login.html'
-    form_list = (
-        ('auth', AuthenticationForm),
-        ('token', AuthenticationTokenForm),
-        ('backup', BackupTokenForm),
-    )
-    idempotent_dict = {
-        'token': False,
-        'backup': False,
+    template_dict = {
+        'auth': 'admin/login.html',
+        'token': 'two_factor/core/login.html',
+        'backup': 'two_factor/core/login.html',
+    }
+    form_dict = {
+        'auth': AuthenticationForm,
+        'token': AuthenticationTokenForm,
+        'backup': BackupTokenForm,
     }
 
     def has_token_step(self):
         return default_device(self.get_user())
 
-    def has_backup_step(self):
-        return default_device(self.get_user()) and \
-            'token' not in self.storage.validated_step_data
-
-    condition_dict = {
-        'token': has_token_step,
-        'backup': has_backup_step,
-    }
     redirect_field_name = REDIRECT_FIELD_NAME
 
     def __init__(self, **kwargs):
         super(LoginView, self).__init__(**kwargs)
         self.user_cache = None
+        self._username_cache = None
+        self._password_cache = None
         self.device_cache = None
+        self.step_cache = 'auth'
+
+    def get_template_names(self):
+        return [self.template_dict[self.step_cache]]
+
+    def authenticate_user(self):
+        form = self.form_dict['auth'](data=self.request.POST)
+        if form.is_valid():
+            self._username_cache = form.cleaned_data['username']
+            self._password_cache = form.cleaned_data['password']
+            self.user_cache = form.user_cache
+        return form
+
+    def check_otp_token(self, *args, **kwargs):
+        step = self.request.POST.get('step', 'token')
+        form = self.form_dict[step](
+            self.get_user(), self.get_device(),
+            data=self.request.POST
+        )
+        if form.is_valid():
+            return self.done()
+        return self.get(step=step, form=form, *args, **kwargs)
 
     def post(self, *args, **kwargs):
         """
@@ -93,12 +107,23 @@ class LoginView(IdempotentSessionWizardView):
         devices added to the account.
         """
         # Generating a challenge doesn't require to validate the form.
-        if 'challenge_device' in self.request.POST:
-            return self.render_goto_step('token')
+        # if 'challenge_device' in self.request.POST:
+        #     return self.render_goto_step('token')
+        form = self.authenticate_user()
+        if not form.is_valid():
+            # invalid username/password
+            return self.get(step='auth', form=form, *args, **kwargs)
+        if not self.has_token_step():
+            # user has not configured two step
+            return self.done()
+        if self.request.POST.get('wizard_goto_step') == 'backup':
+            # user has requested to enter backup token
+            return self.get(step='backup', *args, **kwargs)
+        if 'otp_token' in self.request.POST:
+            return self.check_otp_token(*args, **kwargs)
+        return self.get(step='token', *args, **kwargs)
 
-        return super(LoginView, self).post(*args, **kwargs)
-
-    def done(self, form_list, **kwargs):
+    def done(self, **kwargs):
         """
         Login the user and redirect to the desired page.
         """
@@ -114,23 +139,12 @@ class LoginView(IdempotentSessionWizardView):
                                        user=self.get_user(), device=device)
         return redirect(redirect_to)
 
-    def get_form_kwargs(self, step=None):
-        """
-        AuthenticationTokenForm requires the user kwarg.
-        """
-        if step in ('token', 'backup'):
-            return {
-                'user': self.get_user(),
-                'initial_device': self.get_device(step),
-            }
-        return {}
-
     def get_device(self, step=None):
         """
         Returns the OTP device selected by the user, or his default device.
         """
         if not self.device_cache:
-            challenge_device_id = self.request.POST.get('challenge_device', None)
+            challenge_device_id = self.request.POST.get('challenge_device')
             if challenge_device_id:
                 for device in backup_phones(self.get_user()):
                     if device.persistent_id == challenge_device_id:
@@ -138,7 +152,9 @@ class LoginView(IdempotentSessionWizardView):
                         break
             if step == 'backup':
                 try:
-                    self.device_cache = self.get_user().staticdevice_set.get(name='backup')
+                    self.device_cache = self.get_user().staticdevice_set.get(
+                        name='backup'
+                    )
                 except StaticDevice.DoesNotExist:
                     pass
             if not self.device_cache:
@@ -159,29 +175,36 @@ class LoginView(IdempotentSessionWizardView):
         Returns the user authenticated by the AuthenticationForm. Returns False
         if not a valid user; see also issue #65.
         """
-        if not self.user_cache:
-            form_obj = self.get_form(step='auth',
-                                     data=self.storage.get_step_data('auth'))
-            self.user_cache = form_obj.is_valid() and form_obj.user_cache
         return self.user_cache
 
-    def get_context_data(self, form, **kwargs):
+    def get_context_data(self, step='auth', user=None, form=None, **kwargs):
         """
         Adds user's default and backup OTP devices to the context.
         """
-        context = super(LoginView, self).get_context_data(form, **kwargs)
-        if self.steps.current == 'token':
-            context['device'] = self.get_device()
-            context['other_devices'] = [
-                phone for phone in backup_phones(self.get_user())
-                if phone != self.get_device()]
-            try:
-                context['backup_tokens'] = self.get_user().staticdevice_set\
-                    .get(name='backup').token_set.count()
-            except StaticDevice.DoesNotExist:
-                context['backup_tokens'] = 0
-
-        context['cancel_url'] = resolve_url(settings.LOGOUT_URL)
+        context = super(LoginView, self).get_context_data(**kwargs)
+        self.step_cache = step
+        context['step'] = step
+        if step == 'auth':
+            context['form'] = form or self.form_dict['auth']()
+        elif step in ['token', 'backup']:
+            context['username'] = self._username_cache
+            context['password'] = self._password_cache
+            context['form'] = form or self.form_dict[step](
+                self.request.user,
+                self.get_device(step)
+            )
+            context['device'] = self.get_device(step=step)
+            if step == 'token':
+                context['other_devices'] = [
+                    phone for phone in backup_phones(self.get_user())
+                    if phone != self.get_device()
+                ]
+                try:
+                    context['backup_tokens'] = self.get_user() \
+                        .staticdevice_set.get(name='backup').token_set.count()
+                except StaticDevice.DoesNotExist:
+                    context['backup_tokens'] = 0
+        context['cancel_url'] = resolve_url('admin:logout')
         return context
 
 
