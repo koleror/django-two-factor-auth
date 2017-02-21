@@ -1,11 +1,12 @@
 import logging
+import warnings
 from base64 import b32encode
 from binascii import unhexlify
 import django_otp
 import qrcode
 import qrcode.image.svg
 from django.conf import settings
-from django.contrib.auth import REDIRECT_FIELD_NAME, login as login
+from django.contrib.auth import REDIRECT_FIELD_NAME, login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.sites.shortcuts import get_current_site
@@ -197,14 +198,21 @@ class LoginView(TemplateView):
             if step == 'token':
                 context['other_devices'] = [
                     phone for phone in backup_phones(self.get_user())
-                    if phone != self.get_device()
+                    if phone != self.get_device(step=step)
                 ]
                 try:
                     context['backup_tokens'] = self.get_user() \
                         .staticdevice_set.get(name='backup').token_set.count()
                 except StaticDevice.DoesNotExist:
                     context['backup_tokens'] = 0
-        context['cancel_url'] = resolve_url('admin:logout')
+        if getattr(settings, 'LOGOUT_REDIRECT_URL', None):
+            context['cancel_url'] = resolve_url(settings.LOGOUT_REDIRECT_URL)
+        elif getattr(settings, 'LOGOUT_URL', None):
+            warnings.warn(
+                "LOGOUT_URL has been replaced by LOGOUT_REDIRECT_URL, please "
+                "review the URL and update your settings.",
+                DeprecationWarning)
+            context['cancel_url'] = resolve_url(settings.LOGOUT_URL)
         return context
 
 
