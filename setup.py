@@ -12,7 +12,7 @@ setup(
     license='MIT',
     packages=find_packages(exclude=('example', 'tests')),
     install_requires=[
-        'Django>=1.8',
+        'Django>=1.7',
         'django_otp>=0.3.4,<0.99',
         'qrcode>=4.0.0,<4.99',
         'django-phonenumber-field>=1.1.0,<1.99',
@@ -28,6 +28,7 @@ setup(
         'Development Status :: 5 - Production/Stable',
         'Environment :: Web Environment',
         'Framework :: Django',
+        'Framework :: Django :: 1.7',
         'Framework :: Django :: 1.8',
         'Framework :: Django :: 1.9',
         'Framework :: Django :: 1.10',
