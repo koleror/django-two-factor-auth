@@ -1,7 +1,8 @@
 {% load i18n %}
-
+{% if cancel_url %}
 <a href="{{ cancel_url }}"
    class="pull-right btn btn-link">{% trans "Cancel" %}</a>
+{% endif %}
 {% if step == 'auth' %}
     <button type="submit" class="btn btn-primary">{% trans "Next" %}</button>
 
