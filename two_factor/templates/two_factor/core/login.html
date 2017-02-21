@@ -23,7 +23,6 @@
   {% endif %}
 
   <form action="" method="post">{% csrf_token %}
-    {#{% include "two_factor/_wizard_forms.html" %}#}
     {{ form.as_p }}
     <input id="step" maxlength="10" name="step" type="hidden" autocomplete="off" value="{{step}}">
     {% if step == 'token' or step == 'backup' %}
